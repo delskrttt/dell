@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 syntax = "proto3";
 
 package tictactoe;
@@ -51,3 +52,58 @@ message ServerMessage {
 service Game {
   rpc Play(stream ClientMessage) returns (stream ServerMessage);
 }
+=======
+syntax = "proto3";
+
+package tictactoe;
+
+// Pesan dari client ke server
+message Join {
+  string player_name = 1;
+}
+
+message Move {
+  string match_id = 1;
+  int32 x = 2;
+  int32 y = 3;
+}
+
+message ClientMessage {
+  oneof payload {
+    Join join = 1;
+    Move move = 2;
+  }
+}
+
+// Pesan dari server ke client
+message Joined {
+  string match_id = 1;
+  string your_symbol = 2;
+  string opponent = 3;
+  string start_player = 4;
+}
+
+message GameState {
+  string match_id = 1;
+  repeated string board = 2;
+  string next_turn = 3;
+  string status = 4;
+}
+
+message Error {
+  string message = 1;
+}
+
+message ServerMessage {
+  oneof payload {
+    Joined joined = 1;
+    GameState state = 2;
+    Error err = 3;
+  }
+}
+
+// Layanan gRPC
+service Game {
+  rpc Play(stream ClientMessage) returns (stream ServerMessage);
+}
+>>>>>>> 0ad143e (Initial commit)
