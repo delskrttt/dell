@@ -87,7 +87,6 @@ async def main():
         return
 
     # Konfigurasi alamat server
-    # Sesuaikan jika Android: IP WIFI kamu, bukan 127.0.0.1
     server_address = "localhost:50052"
 
     async with grpc.aio.insecure_channel(server_address) as channel:
