@@ -26,6 +26,9 @@ class Match:
             return False, "Bukan giliran kamu"
 
         idx = self.index(x, y)
+        if not (0 <= x < 3 and 0 <= y < 3):
+            return False, "Koordinat di luar batas (0-2)"
+
         if self.board[idx]:
             return False, "Kotak sudah diisi"
 
@@ -33,6 +36,7 @@ class Match:
         self.check_winner()
 
         if self.status == "ONGOING":
+            # Ganti giliran ke simbol lawan
             self.next_turn = "O" if symbol == "X" else "X"
 
         return True, "OK"
@@ -45,10 +49,12 @@ class Match:
         ]
         for a, b, c in lines:
             if self.board[a] and self.board[a] == self.board[b] == self.board[c]:
+                # Status pemenang, misalnya "X_WON" atau "O_WON"
                 self.status = f"{self.board[a]}_WON"
                 return
 
-        if all(self.board):
+        # Cek DRAW jika semua kotak terisi dan belum ada pemenang
+        if all(self.board) and self.status == "ONGOING":
             self.status = "DRAW"
 
 
@@ -62,15 +68,24 @@ class GameService(pb_grpc.GameServicer):
 
     async def Play(self, request_iterator, context):
         queue = asyncio.Queue()
+        # Inisialisasi player, termasuk referensi ke match, agar mudah dibersihkan
         player = {"queue": queue, "symbol": None, "match": None, "name": None}
 
-        asyncio.create_task(self.handle_messages(request_iterator, player))
+        # Jalankan task untuk menerima pesan dari client secara asinkron
+        recv_task = asyncio.create_task(self.handle_messages(request_iterator, player))
 
-        while True:
-            msg = await queue.get()
-            if msg is None:
-                break
-            yield msg
+        try:
+            while True:
+                # Tunggu pesan untuk dikirim kembali ke client
+                msg = await queue.get()
+                if msg is None:
+                    # Sinyal untuk mengakhiri stream ke client
+                    break
+                yield msg
+        finally:
+            # Pastikan task penerima di-cancel saat loop pengiriman selesai atau terputus
+            recv_task.cancel()
+            await self.handle_disconnect(player)
 
     async def handle_messages(self, requests, player):
         try:
@@ -80,10 +95,47 @@ class GameService(pb_grpc.GameServicer):
                     await self.handle_join(player)
                 elif req.HasField("move"):
                     await self.handle_move(player, req.move)
+        except grpc.aio.AioRpcError:
+            # Terjadi error RPC (koneksi terputus)
+            print(f"Client {player['name']} disconnected via RPC error.")
         except Exception as e:
-            print("Client disconnected:", e)
+            print(f"Error handling client {player['name']}: {e}")
+        finally:
+            # Posisikan None di queue untuk mengakhiri loop pengiriman di Play()
+            await player["queue"].put(None)
 
+    async def handle_disconnect(self, player):
+        print(f"Cleaning up resources for {player['name']}...")
+        match = player.get("match")
+        
+        # Hapus pemain dari daftar tunggu jika dia belum menemukan lawan
+        if self.waiting_player == player:
+            self.waiting_player = None
+            print(f"Removed {player['name']} from waiting list.")
+            return
+
+        # Jika player berada di match
+        if match and match.id in self.matches:
+            # Beri tahu lawan bahwa game berakhir (jika belum berakhir)
+            if match.status == "ONGOING":
+                match.status = "ABORTED"
+                opponent_symbol = "O" if player["symbol"] == "X" else "X"
+                opponent = match.players[opponent_symbol]
+                
+                # Kirim pesan error ke lawan
+                await opponent["queue"].put(pb.ServerMessage(err=pb.Error(
+                    message=f"Lawan ({player['name']}) terputus. Game ABORTED."
+                )))
+                
+                # Sinyal lawan untuk mengakhiri stream-nya juga
+                await opponent["queue"].put(None) 
+            
+            # Hapus match dari daftar match aktif
+            del self.matches[match.id]
+            print(f"Match {match.id} cleaned up.")
+            
     async def handle_join(self, player):
+        # ... (Kode handle_join tetap sama)
         if not self.waiting_player:
             print(f"{player['name']} menunggu lawan...")
             self.waiting_player = player
@@ -114,6 +166,7 @@ class GameService(pb_grpc.GameServicer):
 
             print(f"Match {match.id} dimulai: {p1['name']} (X) vs {p2['name']} (O)")
 
+
     async def handle_move(self, player, move):
         match = player.get("match")
 
@@ -126,15 +179,17 @@ class GameService(pb_grpc.GameServicer):
             await player["queue"].put(pb.ServerMessage(err=pb.Error(message=msg)))
             return
 
-        state = pb.ServerMessage(state=pb.GameState(
+        # Buat pesan State Game
+        state_msg = pb.ServerMessage(state=pb.GameState(
             match_id=match.id,
             board=match.board,
             next_turn=match.next_turn,
             status=match.status
         ))
 
+        # Kirim pesan State Game ke kedua pemain
         for p in match.players.values():
-            await p["queue"].put(state)
+            await p["queue"].put(state_msg)
 
 
 # -------------------------------
@@ -144,8 +199,9 @@ async def serve():
     server = grpc.aio.server()
     pb_grpc.add_GameServicer_to_server(GameService(), server)
 
-    server.add_insecure_port("[::]:50052")
-    print("Server gRPC TicTacToe berjalan di 0.0.0.0:50052 (localhost dan LAN)...")
+    # Memilih port 50051 (dari 9237179)
+    server.add_insecure_port("[::]:50051")
+    print("Server gRPC TicTacToe berjalan di 0.0.0.0:50051 (localhost dan LAN)...")
 
     await server.start()
     await server.wait_for_termination()
